@@ -1,0 +1,6 @@
+pandas
+numpy
+scipy
+anndata
+h5py
+requests
