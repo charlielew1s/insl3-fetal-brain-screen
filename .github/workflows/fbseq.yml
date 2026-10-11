@@ -22,6 +22,8 @@ jobs:
           for f in expression_gene.bed covariates.txt header_fetal_brain.txt; do
             curl -fL --retry 3 --silent --show-error "$BASE/$f" -o "$f"
           done
+          gzip -dc expression_gene.bed > expression_gene.plain
+          mv expression_gene.plain expression_gene.bed
       - name: Exact-week strict autosomal separation
         run: |
           python - <<'PY'
