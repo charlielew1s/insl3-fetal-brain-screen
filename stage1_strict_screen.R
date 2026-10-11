@@ -15,7 +15,7 @@ obj <- getAtlasExperiment(acc)
 # Resolve RNA-seq SummarizedExperiment robustly.
 if (methods::is(obj, "SummarizedExperiment")) {
   se <- obj
-} else if (is.list(obj)) || methods::is(obj, "List")) {
+} else if (is.list(obj) || methods::is(obj, "List")) {
   if ("rnaseq" %in% names(obj)) se <- obj[["rnaseq"]]
   else {
     ii <- which(vapply(obj, function(x) methods::is(x, "SummarizedExperiment"), logical(1)))
