@@ -1,0 +1,83 @@
+
+name: Fetal-brain exact-age XX-XY screen
+on:
+  push:
+    paths: ['.github/workflows/fbseq.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -q pandas numpy
+      - name: Download open 120-fetus cohort
+        run: |
+          BASE='https://raw.githubusercontent.com/victortoledo/frontiers_sexdiff_fetal_brain/main/raw%20data'
+          for f in expression_gene.bed covariates.txt header_fetal_brain.txt; do
+            curl -fL --retry 3 --silent --show-error "$BASE/$f" -o "$f"
+          done
+      - name: Exact-week strict autosomal separation
+        run: |
+          python - <<'PY'
+          import pandas as pd, numpy as np
+          from pathlib import Path
+          from math import comb
+          out = Path('results'); out.mkdir(exist_ok=True)
+          meta = pd.read_csv('covariates.txt', sep='\t', dtype={'Sample': str})
+          meta['PCW'] = pd.to_numeric(meta.PCW, errors='coerce')
+          meta = meta[meta.PCW.isin(range(12, 17)) & meta.Sex.isin(['Male','Female'])]
+          counts = (meta.groupby(['PCW','Sex']).size().unstack(fill_value=0)
+                    .reindex(index=range(12,17),columns=['Female','Male'],fill_value=0))
+          counts.to_csv(out/'donors_by_exact_age.csv')
+          print(counts.to_string(),flush=True)
+          assert (counts >= 4).all().all(), 'Fewer than 4 donors/sex in a week'
+          columns = pd.read_csv('header_fetal_brain.txt',sep='\t',nrows=0).columns.astype(str).tolist()
+          with open('expression_gene.bed') as f:
+              has_header = f.readline().split('\t')[0].strip().lower() in ('chr','chrom','chromosome')
+          expr = (pd.read_csv('expression_gene.bed',sep='\t',low_memory=False)
+                  if has_header else pd.read_csv('expression_gene.bed',sep='\t',header=None,names=columns,low_memory=False))
+          expr.columns = expr.columns.astype(str)
+          assert 'Chr' in expr and 'ID' in expr, 'Expression matrix format changed'
+          chrom = expr.Chr.astype(str).str.replace(r'^chr','',regex=True,case=False)
+          expr = expr.loc[chrom.isin(map(str,range(1,23)))].copy()
+          assert not expr.ID.duplicated().any(), 'Duplicate gene IDs require resolution'
+          hits=[]
+          for age in range(12,17):
+              md = meta.loc[meta.PCW.eq(age)]
+              female = md.loc[md.Sex.eq('Female'),'Sample'].tolist()
+              male = md.loc[md.Sex.eq('Male'),'Sample'].tolist()
+              xx = expr[female].apply(pd.to_numeric,errors='coerce').to_numpy(dtype=float)
+              xy = expr[male].apply(pd.to_numeric,errors='coerce').to_numpy(dtype=float)
+              valid = np.isfinite(xx).all(axis=1) & np.isfinite(xy).all(axis=1)
+              xxlo,xxhi = xx.min(axis=1),xx.max(axis=1)
+              xylo,xyhi = xy.min(axis=1),xy.max(axis=1)
+              higher,lower = xylo > xxhi, xyhi < xxlo
+              take = np.flatnonzero(valid & (higher | lower))
+              for i in take:
+                  hits.append({'gene_id':expr.ID.iloc[i], 'week_pcw':age,
+                      'direction':'XY>XX' if higher[i] else 'XY<XX',
+                      'n_xx':len(female),'n_xy':len(male),
+                      'gap':xylo[i]-xxhi[i] if higher[i] else xxlo[i]-xyhi[i],
+                      'null_p':2/comb(len(female)+len(male),len(female))})
+              print(f'PCW {age}: {len(take)} strictly separated autosomal genes',flush=True)
+          hits = pd.DataFrame(hits,columns=['gene_id','week_pcw','direction','n_xx','n_xy','gap','null_p'])
+          hits.to_csv(out/'all_strict_hits.csv',index=False)
+          repeated = (hits.groupby(['gene_id','direction']).filter(lambda x:x.week_pcw.nunique()>=2)
+                      if not hits.empty else hits.copy())
+          repeated.to_csv(out/'hits_in_two_or_more_exact_weeks.csv',index=False)
+          print('Total strict events:',len(hits),'Repeated events:',len(repeated),flush=True)
+          print('Exploratory only: review batch effects, multiplicity, gene expression scale and donor provenance.',flush=True)
+          PY
+      - name: Save all outputs even if a step fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: age-matched-fetal-brain-results
+          path: results/
+          if-no-files-found: warn
