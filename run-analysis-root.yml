@@ -1,0 +1,77 @@
+name: Run strict fetal-brain screen
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: 'release'
+          use-public-rspm: true
+
+      - name: Install R / Bioconductor packages
+        shell: Rscript {0}
+        run: |
+          if (!requireNamespace("BiocManager", quietly = TRUE))
+            install.packages("BiocManager", repos = "https://cloud.r-project.org")
+
+          pkgs <- c(
+            "ExpressionAtlas",
+            "SummarizedExperiment",
+            "edgeR",
+            "GenomeInfoDb"
+          )
+
+          need <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
+
+          if (length(need))
+            BiocManager::install(need, ask = FALSE, update = FALSE)
+
+      - name: Stage 1 — strict donor-level screen
+        run: Rscript stage1_strict_screen.R
+
+      - name: Set up Python
+        if: always()
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        if: always()
+        run: pip install --quiet -r requirements.txt
+
+      - name: Stage 2 — fetal cell-type localization
+        if: success()
+        run: python stage2_celltype.py
+
+      - name: Show result files
+        if: always()
+        run: |
+          echo "=== repository outputs ==="
+          find results logs -maxdepth 2 -type f -print 2>/dev/null || true
+
+      - name: Upload analysis results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strict-fetal-brain-results
+          path: |
+            results/**
+            logs/**
+          if-no-files-found: warn
+          retention-days: 30
